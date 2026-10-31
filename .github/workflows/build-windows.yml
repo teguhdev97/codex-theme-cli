@@ -59,7 +59,7 @@ jobs:
       - name: Build CLI and helpers
         working-directory: codex-rs
         run: |
-          cargo build --locked --release --target x86_64-pc-windows-msvc --bin codex --bin codex-code-mode-host --bin codex-exec-server --bin codex-responses-api-proxy --bin codex-windows-sandbox-setup --bin codex-windows-sandbox-service --bin codex-command-runner --bin codex-app-server
+          cargo build --release --target x86_64-pc-windows-msvc --bin codex --bin codex-code-mode-host --bin codex-exec-server --bin codex-responses-api-proxy --bin codex-windows-sandbox-setup --bin codex-windows-sandbox-service --bin codex-command-runner --bin codex-app-server
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
       - name: Verify and package
         run: |
@@ -72,6 +72,7 @@ jobs:
           $binaries = @('codex','codex-code-mode-host','codex-exec-server','codex-responses-api-proxy','codex-windows-sandbox-setup','codex-windows-sandbox-service','codex-command-runner','codex-app-server')
           foreach ($binary in $binaries) { Copy-Item "$release\$binary.exe" dist/bundle }
           Copy-Item azure-package/install-theme.ps1, azure-package/README.md dist/bundle
+          Copy-Item codex-rs/Cargo.lock dist/bundle/Cargo.lock
           Copy-Item LICENSE dist/bundle/LICENSE-upstream
           if (Test-Path NOTICE) { Copy-Item NOTICE dist/bundle/NOTICE-upstream }
           @{ upstream = $env:STABLE_GIT_COMMIT; theme = '${{ github.sha }}'; nativeVoiceRuntimeIncluded = $false; signed = $false } | ConvertTo-Json | Set-Content dist/bundle/build-info.json
