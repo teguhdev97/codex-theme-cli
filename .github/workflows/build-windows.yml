@@ -1,0 +1,94 @@
+name: Build Codex Azure Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-windows.yml', 'header.patch', 'codex-logo.txt', 'install-theme.ps1']
+permissions:
+  contents: write
+concurrency:
+  group: azure-windows
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_HOME: C:\c
+      CARGO_TARGET_DIR: C:\t
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Enable long paths
+        run: |
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -PropertyType DWord -Force | Out-Null
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: openai/codex
+          ref: rust-v0.166.0
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: azure-package
+          persist-credentials: false
+      - name: Apply header patch
+        run: |
+          git apply --check azure-package/header.patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch validation failed' }
+          git apply azure-package/header.patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch application failed' }
+          Copy-Item azure-package/codex-logo.txt codex-rs/tui/src/history_cell/codex-logo.txt
+          "STABLE_GIT_COMMIT=$(git rev-parse HEAD)" >> $env:GITHUB_ENV
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Build CLI and helpers
+        working-directory: codex-rs
+        run: |
+          cargo build --locked --release --target x86_64-pc-windows-msvc --bin codex --bin codex-code-mode-host --bin codex-exec-server --bin codex-responses-api-proxy --bin codex-windows-sandbox-setup --bin codex-windows-sandbox-service --bin codex-command-runner --bin codex-app-server
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+      - name: Verify and package
+        run: |
+          $release = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc\release'
+          & "$release\codex.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Version test failed' }
+          & "$release\codex.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw 'Help test failed' }
+          New-Item -ItemType Directory -Force dist/bundle | Out-Null
+          $binaries = @('codex','codex-code-mode-host','codex-exec-server','codex-responses-api-proxy','codex-windows-sandbox-setup','codex-windows-sandbox-service','codex-command-runner','codex-app-server')
+          foreach ($binary in $binaries) { Copy-Item "$release\$binary.exe" dist/bundle }
+          Copy-Item azure-package/install-theme.ps1, azure-package/README.md dist/bundle
+          Copy-Item LICENSE dist/bundle/LICENSE-upstream
+          if (Test-Path NOTICE) { Copy-Item NOTICE dist/bundle/NOTICE-upstream }
+          @{ upstream = $env:STABLE_GIT_COMMIT; theme = '${{ github.sha }}'; nativeVoiceRuntimeIncluded = $false; signed = $false } | ConvertTo-Json | Set-Content dist/bundle/build-info.json
+          Compress-Archive -Path dist/bundle/* -DestinationPath dist/CodexAzure-Windows-x64.zip
+          $hash = (Get-FileHash dist/CodexAzure-Windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  CodexAzure-Windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: CodexAzure-Windows-x64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "azure-build-${{ github.run_number }}-${{ github.run_attempt }}" dist/CodexAzure-Windows-x64.zip dist/SHA256SUMS.txt --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Codex Azure Windows x64" --prerelease --notes "Custom Codex 0.166.0 with character logo and terminal theme installer. Unsigned community build; native voice runtime not bundled. Version and help smoke tests passed; visual header requires manual testing."
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed; use Actions artifact.' }
